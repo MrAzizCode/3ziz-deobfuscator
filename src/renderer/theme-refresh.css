@@ -1,0 +1,261 @@
+/*
+ * Flat neutral theme.
+ *
+ * This layer replaces the decorated look that shipped before: a cream-and-
+ * purple palette with radial page glows, twenty-two gradients, blurred glass
+ * panels, and looping animations.  A tool that reads obfuscated code should
+ * look like a tool, so the palette here is grey, the accent appears only where
+ * it carries meaning, and surfaces are separated by 1px borders rather than by
+ * shadow and blur.
+ *
+ * It is deliberately an override layer rather than a rewrite of styles.css:
+ * the component rules there are correct, only their finish was wrong.
+ */
+
+:root {
+  color-scheme: light;
+
+  --bg: #f4f5f6;
+  --bg-elevated: #ffffff;
+  --panel: #ffffff;
+  --panel-raised: #ffffff;
+  --panel-soft: #fafbfb;
+
+  --line: #dcdfe3;
+  --line-soft: #e7e9ec;
+  --line-strong: #c3c8cf;
+
+  --text: #16181c;
+  --text-soft: #3f444c;
+  --muted: #6b7280;
+  --muted-strong: #4b5159;
+
+  /* One accent, used for selection and the primary action only. */
+  --accent: #2563a8;
+  --accent-bright: #1e5490;
+  --accent-soft: #2563a814;
+
+  --cyan: #0f766e;
+  --green: #197a4b;
+  --green-soft: #197a4b12;
+  --amber: #8a6100;
+  --amber-soft: #8a610012;
+  --red: #b3261e;
+  --red-soft: #b3261e10;
+  --blue: #2563a8;
+  --blue-soft: #2563a812;
+
+  --radius-sm: 4px;
+  --radius: 5px;
+  --radius-lg: 6px;
+  --shadow: none;
+
+  --mono: "Cascadia Mono", Consolas, "SFMono-Regular", ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --bg: #16181b;
+    --bg-elevated: #1c1f23;
+    --panel: #1c1f23;
+    --panel-raised: #22262b;
+    --panel-soft: #191c20;
+
+    --line: #313740;
+    --line-soft: #272c33;
+    --line-strong: #444c57;
+
+    --text: #e6e8ea;
+    --text-soft: #b8bdc4;
+    --muted: #8b929b;
+    --muted-strong: #a2a9b2;
+
+    --accent: #5b9dd9;
+    --accent-bright: #7ab2e4;
+    --accent-soft: #5b9dd91f;
+
+    --cyan: #4db6ac;
+    --green: #5fbf8f;
+    --green-soft: #5fbf8f16;
+    --amber: #d6a444;
+    --amber-soft: #d6a44416;
+    --red: #e0736e;
+    --red-soft: #e0736e16;
+    --blue: #5b9dd9;
+    --blue-soft: #5b9dd916;
+  }
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+/*
+ * Remove every decorative fill, glow, and float in one place.
+ *
+ * `!important` is deliberate here and only here: this is an override layer
+ * sitting on top of ~2,400 lines of component rules whose class selectors
+ * would otherwise win.  Elements that need a real fill get an explicit
+ * background-color below, and icons are inline SVG rather than CSS images, so
+ * nothing legitimate depends on background-image.
+ */
+* {
+  background-image: none !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+body {
+  background-color: var(--bg);
+}
+
+.app-header,
+.summary-card,
+.side-card,
+.loading-card,
+.failure-card,
+.empty-hero,
+.code-surface,
+.toast {
+  background-color: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.app-header {
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+
+/* The brand mark is a plain monogram, not a gradient chip. */
+.brand__mark {
+  background-color: var(--text);
+  color: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+}
+
+/* Buttons: one filled primary, everything else outlined. */
+.button {
+  background-color: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: inherit;
+  transition: background-color 90ms linear, border-color 90ms linear;
+}
+
+.button:hover:not(:disabled) {
+  background-color: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.button--primary {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.button--primary:hover:not(:disabled) {
+  background-color: var(--accent-bright);
+  border-color: var(--accent-bright);
+}
+
+.button:disabled {
+  opacity: 0.5;
+}
+
+/* Progress and confidence bars are solid fills, not animated sweeps. */
+.progress-track,
+.confidence-track {
+  background-color: var(--line-soft);
+  border-radius: 2px;
+}
+
+.progress-track__fill,
+.confidence-track__fill {
+  background-color: var(--accent);
+  border-radius: 2px;
+}
+
+.drop-zone {
+  background-color: var(--panel-soft);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+}
+
+.drop-zone--active {
+  background-color: var(--accent-soft);
+  border-color: var(--accent);
+  border-style: solid;
+}
+
+.tab {
+  background-color: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab--active {
+  background-color: var(--accent-soft);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.code-surface {
+  background-color: var(--bg-elevated);
+  font-family: var(--mono);
+}
+
+/* Fills that previously came from a gradient now need a flat colour. */
+.file-emblem,
+.stage__rail,
+.diagonal-fill,
+.skeleton {
+  background-color: var(--panel-soft);
+}
+
+.summary-card__icon,
+.loading-safety__icon,
+.failure-card__icon,
+.drop-zone__icon {
+  background-color: var(--accent-soft);
+  color: var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+/*
+ * Motion: keep only what communicates state, and drop it entirely when the
+ * user has asked for reduced motion.
+ */
+.skeleton {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background-color: var(--accent-soft);
+  color: var(--text);
+}

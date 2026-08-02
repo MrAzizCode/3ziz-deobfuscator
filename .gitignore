@@ -1,0 +1,28 @@
+node_modules/
+dist/
+release/
+coverage/
+.vite/
+*.log
+
+# Local analysis/build scratch space.
+work/
+
+# Generated user-facing builds are retained outside Git.
+outputs/*
+!outputs/.gitkeep
+
+# Local job data created by the desktop app.
+.3ziz-jobs/
+
+# Samples and anything derived from them stay local.
+#
+# These are recovered artifacts from privately supplied obfuscated scripts:
+# constants, strings, instruction listings, and partial renderings. They carry
+# no redistribution license and are not ours to publish, so they are kept out
+# of the repository. The known-profile route degrades to a "rejected" status
+# when they are absent, and the suites that need them skip themselves.
+assets/jnkie/
+fixtures/
+*.luac
+

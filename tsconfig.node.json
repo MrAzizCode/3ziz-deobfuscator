@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "lib": [
+      "ES2022"
+    ],
+    "types": [
+      "node",
+      "electron"
+    ],
+    "rootDir": "src",
+    "outDir": "dist/node"
+  },
+  "include": [
+    "src/core/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/cli/**/*.ts",
+    "src/desktop/**/*.ts"
+  ]
+}
+

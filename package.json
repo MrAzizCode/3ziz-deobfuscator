@@ -1,0 +1,66 @@
+{
+  "name": "3ziz-deobfuscator",
+  "version": "0.6.0",
+  "private": true,
+  "description": "Safe, local, evidence-first Lua/Luau deobfuscation for Windows",
+  "author": "Aziz",
+  "license": "UNLICENSED",
+  "main": "dist/node/desktop/main.js",
+  "scripts": {
+    "build": "npm run build:node && npm run build:renderer",
+    "build:node": "tsc -p tsconfig.node.json",
+    "build:renderer": "vite build",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "cli": "tsx src/cli/index.ts",
+    "start": "npm run build && electron .",
+    "package:win": "npm run build && electron-builder --win portable nsis"
+  },
+  "dependencies": {
+    "luaparse": "0.3.1",
+    "lzma-purejs": "0.9.3"
+  },
+  "devDependencies": {
+    "@monaco-editor/react": "4.7.0",
+    "@types/luaparse": "0.2.13",
+    "@types/node": "26.1.2",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.4",
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3",
+    "monaco-editor": "0.53.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tsx": "4.23.1",
+    "typescript": "7.0.2",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
+  },
+  "build": {
+    "appId": "com.aziz.3zizdeobfuscator",
+    "productName": "3ziz Deobfuscator",
+    "asar": true,
+    "directories": {
+      "output": "outputs/release"
+    },
+    "files": [
+      "dist/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
