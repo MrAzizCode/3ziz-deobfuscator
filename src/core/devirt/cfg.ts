@@ -258,9 +258,12 @@ export function orderBlocks(cfg: ControlFlowGraph): readonly number[] {
     }
   };
 
-  // Seed with the entry, then any remaining block in address order.
+  // Seed with the entry, then any remaining reachable block in address order.
   const pending: number[] = cfg.entry >= 0 ? [cfg.entry] : [];
-  const byAddress = cfg.blocks.map((block) => block.id);
+  const byAddress = [...cfg.reachable].sort(
+    (left, right) =>
+      (cfg.blocks[left]?.start ?? 0) - (cfg.blocks[right]?.start ?? 0),
+  );
 
   for (;;) {
     let seed: number | undefined = pending.shift();
@@ -271,14 +274,21 @@ export function orderBlocks(cfg: ControlFlowGraph): readonly number[] {
     }
 
     let current: number | null = seed;
-    while (current !== null && !placed.has(current)) {
+    while (
+      current !== null &&
+      !placed.has(current) &&
+      cfg.reachable.has(current)
+    ) {
       placed.add(current);
       order.push(current);
       const block = cfg.blocks[current]!;
       // Queue the alternative branch so it is emitted soon after.
       for (const successor of block.successors) pending.push(successor);
       const next: number | null = preferred(block);
-      current = next !== null && !placed.has(next) ? next : null;
+      current =
+        next !== null && !placed.has(next) && cfg.reachable.has(next)
+          ? next
+          : null;
     }
   }
   return order;

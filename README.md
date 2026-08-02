@@ -28,9 +28,12 @@ that ships different constants is still readable.
 **Devirtualizes VM bytecode back to Lua.** Decoded instruction records are
 lifted through a typed opcode-effect model into real, re-parseable Lua:
 recovered global names, string and numeric literals, method calls, and folded
-chained lookups. Basic blocks are re-ordered so control falls through rather
-than jumping, and conditionals become `if` statements where a region is proven
-to have a single entry and exit.
+chained lookups. Branch operands are resolved through their addressing mode —
+absolute, relative forward, relative backward — which is what makes the control
+flow tractable: blocks are then re-ordered so control falls through rather than
+jumping, conditionals become `if` statements where a region is proven to have a
+single entry and exit, and code the entry point cannot reach is recognized as
+decoy padding and omitted with its count reported.
 
 **Disassembles Lua 5.1 bytecode.** A bounded structural validator and
 disassembler with depth, prototype, instruction, constant, and debug-table

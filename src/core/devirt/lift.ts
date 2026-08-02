@@ -59,6 +59,8 @@ export interface LiftedPrototype {
   /** Registers referenced anywhere, so the caller can declare them. */
   readonly registers: readonly number[];
   readonly childPrototypes: readonly number[];
+  /** Globals this function resolves by name, as readability evidence. */
+  readonly resolvedGlobals: readonly string[];
   readonly usesVararg: boolean;
   readonly unstructuredRegions: number;
 }
@@ -123,6 +125,8 @@ class Lifter {
   private readonly statements: LuaStatement[] = [];
   private readonly usedRegisters = new Set<number>();
   private readonly childPrototypes = new Set<number>();
+  /** Global names resolved through an environment lookup with a constant key. */
+  private readonly resolvedGlobals = new Set<string>();
   private readonly labelTargets = new Set<number>();
   private provenCount = 0;
   private protocolCount = 0;
@@ -141,10 +145,11 @@ class Lifter {
     const order = orderBlocks(cfg);
 
     /*
-     * Every block is emitted.  Static reachability from the entry point covers
-     * only about a seventh of this stream and excludes every recovered API
-     * name, so the dispatcher's control flow is evidently data-driven and
-     * pruning on it would hide real code.  The figure is still reported.
+     * Emit reachable blocks only.  Once branch operands are resolved through
+     * their addressing mode, reachability covers ~86% of this stream and
+     * contains every recovered API name, so what remains is the obfuscator's
+     * decoy code.  The omitted count is reported per function rather than
+     * quietly dropped.
      */
     const gotoTargets = new Set<number>();
     const bodies = new Map<number, LuaStatement[]>();
@@ -195,6 +200,7 @@ class Lifter {
       unresolvedCount: this.unresolvedCount,
       registers: [...this.usedRegisters].sort((left, right) => left - right),
       childPrototypes: [...this.childPrototypes],
+      resolvedGlobals: [...this.resolvedGlobals].sort(),
       usesVararg: this.usesVararg,
       unstructuredRegions: this.unstructuredRegions,
     };
@@ -696,7 +702,12 @@ class Lifter {
         // A constant string key is the script's own global name.
         if (key.kind === "literal" && /^"[A-Za-z_]\w*"$/.test(key.text)) {
           const identifier = key.text.slice(1, -1);
-          if (isValidIdentifier(identifier)) return name(identifier);
+          if (isValidIdentifier(identifier)) {
+            // Record it here rather than regexing the rendered text later: a
+            // global bound to a register (`v5 = pcall`) has no syntactic mark.
+            this.resolvedGlobals.add(identifier);
+            return name(identifier);
+          }
         }
         return { kind: "index", object: name("_ENV"), key };
       }

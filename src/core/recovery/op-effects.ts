@@ -189,9 +189,21 @@ function auxiliary(channel: JnkieInstructionChannel): JnkieValue {
   return literal(channel.payload);
 }
 
-/** The dispatcher resumes at the instruction after the encoded target. */
-function jumpTarget(encoded: number): number {
-  return encoded + 1;
+/**
+ * Resolve a branch destination.
+ *
+ * The operand's `mode` is its addressing mode, and the record decoder has
+ * already applied it: mode 1 and 7 are absolute, mode 3 is relative forward
+ * (`pc + payload`), and mode 6 is relative backward (`pc - payload`).  Reading
+ * the raw payload instead treats every branch as absolute, which sends all
+ * 4,720 forward-relative and 1,902 backward-relative jumps in the authorized
+ * sample to the wrong instruction.
+ *
+ * The trailing `+ 1` is the dispatcher's post-increment.
+ */
+function jumpTarget(channel: JnkieInstructionChannel): number {
+  const resolved = channel.resolvedValue ?? channel.payload;
+  return resolved + 1;
 }
 
 function assign(target: number, expression: JnkieExpression): JnkieOpEffect {
@@ -387,16 +399,16 @@ export function resolveOpEffect(
 
     // -------------------------------------------------------- control flow
     case 136:
-      return { name: "JUMP", effect: { kind: "jump", target: jumpTarget(n) } };
+      return { name: "JUMP", effect: { kind: "jump", target: jumpTarget(N) } };
     case 21:
       return {
         name: "JUMP_IF_TRUTHY",
-        effect: { kind: "test", operand: a, expect: "truthy", target: jumpTarget(n) },
+        effect: { kind: "test", operand: a, expect: "truthy", target: jumpTarget(N) },
       };
     case 58:
       return {
         name: "JUMP_IF_FALSY",
-        effect: { kind: "test", operand: a, expect: "falsy", target: jumpTarget(n) },
+        effect: { kind: "test", operand: a, expect: "falsy", target: jumpTarget(N) },
       };
     case 69:
       return {
@@ -406,7 +418,7 @@ export function resolveOpEffect(
           operator: "le",
           left: register(a),
           right: M,
-          target: jumpTarget(q),
+          target: jumpTarget(Q),
         },
       };
     case 144:
@@ -417,7 +429,7 @@ export function resolveOpEffect(
           operator: "ne",
           left: register(q),
           right: K,
-          target: jumpTarget(n),
+          target: jumpTarget(N),
         },
       };
     case 161:
@@ -428,7 +440,7 @@ export function resolveOpEffect(
           operator: "lt",
           left: register(n),
           right: register(q),
-          target: jumpTarget(a),
+          target: jumpTarget(A),
         },
       };
     case 199:
@@ -439,7 +451,7 @@ export function resolveOpEffect(
           operator: "ge",
           left: register(q),
           right: K,
-          target: jumpTarget(n),
+          target: jumpTarget(N),
         },
       };
     case 216:
@@ -450,18 +462,18 @@ export function resolveOpEffect(
           operator: "ne",
           left: register(q),
           right: register(a),
-          target: jumpTarget(n),
+          target: jumpTarget(N),
         },
       };
     case 176:
       return {
         name: "NUMERIC_FOR_PREP",
-        effect: { kind: "for-prep", base: q, target: jumpTarget(a) },
+        effect: { kind: "for-prep", base: q, target: jumpTarget(A) },
       };
     case 73:
       return {
         name: "NUMERIC_FOR_LOOP",
-        effect: { kind: "for-loop", variable: q + 3, target: jumpTarget(a) },
+        effect: { kind: "for-loop", variable: q + 3, target: jumpTarget(A) },
       };
 
     // --------------------------------------------------------------- calls

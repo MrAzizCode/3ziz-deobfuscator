@@ -269,9 +269,23 @@ describe("JNKIE / Luraph static extraction", () => {
     expect(devirtualization.coverage.prototypesEmitted).toBe(371);
     expect(devirtualization.coverage.instructionRecords).toBe(34_696);
     expect(devirtualization.coverage.provenRatio).toBeGreaterThan(0.75);
+    // Collected from environment lookups with constant keys, not scraped from
+    // rendered text, so a global bound to a register still counts.
     expect(devirtualization.coverage.resolvedGlobalNames).toEqual(
-      expect.arrayContaining(["CFrame", "pcall", "setmetatable", "utf8"]),
+      expect.arrayContaining([
+        "CFrame",
+        "Instance",
+        "game",
+        "pcall",
+        "setmetatable",
+      ]),
     );
+    // Branch operands carry an addressing mode; resolving it is what makes
+    // most of the stream reachable and the decoy remainder prunable.
+    expect(devirtualization.coverage.reachableInstructions).toBeGreaterThan(
+      devirtualization.coverage.unreachableInstructions * 4,
+    );
+    expect(devirtualization.coverage.explainedRatio).toBeGreaterThan(0.9);
     // Lua's own keywords are not evidence of a recovered name.
     expect(devirtualization.coverage.resolvedGlobalNames).not.toContain("then");
     // Decoder-protocol records are explained, not unknown.

@@ -15,6 +15,9 @@ outputs/*
 # Local job data created by the desktop app.
 .3ziz-jobs/
 
+# Editor/agent workspace configuration stays local.
+.claude/
+
 # Samples and anything derived from them stay local.
 #
 # These are recovered artifacts from privately supplied obfuscated scripts:

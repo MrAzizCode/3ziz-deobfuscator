@@ -199,9 +199,17 @@ function auxiliary(channel: JnkieInstructionChannel): string {
   return numberText(channel.payload);
 }
 
-function jumpTarget(encodedTarget: number): string {
-  // The known dispatcher increments the PC after a handler assignment.
-  return `PC${String(encodedTarget + 1).padStart(4, "0")}`;
+/**
+ * Branch destinations honour the operand addressing mode the record decoder
+ * already applied: absolute for modes 1 and 7, relative forward for mode 3,
+ * relative backward for mode 6.  Reading the raw payload treats every branch as
+ * absolute, which points most of them at the wrong instruction.
+ *
+ * The trailing increment is the dispatcher's post-increment.
+ */
+function jumpTarget(channel: JnkieInstructionChannel): string {
+  const resolved = channel.resolvedValue ?? channel.payload;
+  return `PC${String(resolved + 1).padStart(4, "0")}`;
 }
 
 function registerSlice(first: number, last: number): string {
@@ -271,7 +279,7 @@ export function knownSemantic(
     case 21:
       return {
         name: "JUMP_IF_TRUTHY",
-        text: `IF TRUTHY(${register(a)}) THEN GOTO ${jumpTarget(nRegister)}`,
+        text: `IF TRUTHY(${register(a)}) THEN GOTO ${jumpTarget(N)}`,
       };
     case 22:
       return {
@@ -303,7 +311,7 @@ export function knownSemantic(
     case 58:
       return {
         name: "JUMP_IF_FALSY",
-        text: `IF FALSY(${register(a)}) THEN GOTO ${jumpTarget(nRegister)}`,
+        text: `IF FALSY(${register(a)}) THEN GOTO ${jumpTarget(N)}`,
       };
     case 59:
       return {
@@ -318,7 +326,7 @@ export function knownSemantic(
     case 69:
       return {
         name: "JUMP_IF_REG_LE_CONST",
-        text: `IF ${register(a)} <= ${M} THEN GOTO ${jumpTarget(q)}`,
+        text: `IF ${register(a)} <= ${M} THEN GOTO ${jumpTarget(Q)}`,
       };
     case 71:
       return { name: "LOAD_CONSTANT", text: `${register(nRegister)} = ${K}` };
@@ -330,7 +338,7 @@ export function knownSemantic(
     case 73:
       return {
         name: "NUMERIC_FOR_LOOP",
-        text: `LOOP_INDEX += LOOP_STEP; IF ((LOOP_STEP > 0 AND LOOP_INDEX <= LOOP_LIMIT) OR (LOOP_STEP <= 0 AND LOOP_INDEX >= LOOP_LIMIT)) THEN ${register(q + 3)} = LOOP_INDEX; GOTO ${jumpTarget(a)}`,
+        text: `LOOP_INDEX += LOOP_STEP; IF ((LOOP_STEP > 0 AND LOOP_INDEX <= LOOP_LIMIT) OR (LOOP_STEP <= 0 AND LOOP_INDEX >= LOOP_LIMIT)) THEN ${register(q + 3)} = LOOP_INDEX; GOTO ${jumpTarget(A)}`,
       };
     case 75:
       return {
@@ -410,7 +418,7 @@ export function knownSemantic(
     case 135:
       return { name: "ADD_CONST_CONST", text: `${register(nRegister)} = ${K} + ${n}` };
     case 136:
-      return { name: "JUMP", text: `GOTO ${jumpTarget(nRegister)}` };
+      return { name: "JUMP", text: `GOTO ${jumpTarget(N)}` };
     case 137:
       return {
         name: "SUBTRACT_CONST_CONST",
@@ -429,7 +437,7 @@ export function knownSemantic(
     case 144:
       return {
         name: "JUMP_IF_REG_NE_CONST",
-        text: `IF ${register(q)} != ${K} THEN GOTO ${jumpTarget(nRegister)}`,
+        text: `IF ${register(q)} != ${K} THEN GOTO ${jumpTarget(N)}`,
       };
     case 147:
       return {
@@ -454,7 +462,7 @@ export function knownSemantic(
     case 161:
       return {
         name: "JUMP_IF_REG_LT_REG",
-        text: `IF ${register(nRegister)} < ${register(q)} THEN GOTO ${jumpTarget(a)}`,
+        text: `IF ${register(nRegister)} < ${register(q)} THEN GOTO ${jumpTarget(A)}`,
       };
     case 162:
       return {
@@ -469,7 +477,7 @@ export function knownSemantic(
     case 176:
       return {
         name: "NUMERIC_FOR_PREP",
-        text: `PUSH_NUMERIC_LOOP_FRAME(index=LOOP_INDEX, limit=LOOP_LIMIT, step=LOOP_STEP); LOOP_BASE = ${q}; LOOP_STEP = NUMERIC(${register(q + 2)}); LOOP_LIMIT = NUMERIC(${register(q + 1)}); LOOP_INDEX = ${register(q)} - LOOP_STEP; GOTO ${jumpTarget(a)}`,
+        text: `PUSH_NUMERIC_LOOP_FRAME(index=LOOP_INDEX, limit=LOOP_LIMIT, step=LOOP_STEP); LOOP_BASE = ${q}; LOOP_STEP = NUMERIC(${register(q + 2)}); LOOP_LIMIT = NUMERIC(${register(q + 1)}); LOOP_INDEX = ${register(q)} - LOOP_STEP; GOTO ${jumpTarget(A)}`,
       };
     case 187:
       return { name: "MOVE", text: `${register(nRegister)} = ${register(a)}` };
@@ -493,7 +501,7 @@ export function knownSemantic(
     case 199:
       return {
         name: "JUMP_IF_REG_GE_CONST",
-        text: `IF ${register(q)} >= ${K} THEN GOTO ${jumpTarget(nRegister)}`,
+        text: `IF ${register(q)} >= ${K} THEN GOTO ${jumpTarget(N)}`,
       };
     case 208:
       return {
@@ -513,7 +521,7 @@ export function knownSemantic(
     case 216:
       return {
         name: "JUMP_IF_REG_NE_REG",
-        text: `IF ${register(q)} != ${register(a)} THEN GOTO ${jumpTarget(nRegister)}`,
+        text: `IF ${register(q)} != ${register(a)} THEN GOTO ${jumpTarget(N)}`,
       };
     case 219:
       return {

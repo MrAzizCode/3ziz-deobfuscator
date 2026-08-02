@@ -107,8 +107,13 @@ function batchedLocals(registers: readonly number[]): LuaStatement[] {
 
 function functionText(lifted: LiftedPrototype, prototype: JnkieDecodedPrototype): string {
   const header =
-    `-- prototype ${prototype.index}: ${lifted.instructionCount} VM instructions, ` +
-    `${lifted.provenCount} proven, ${lifted.unresolvedCount} unresolved` +
+    `-- prototype ${prototype.index}: ` +
+    `${lifted.reachableInstructionCount} reachable VM instructions of ` +
+    `${lifted.instructionCount}, ${lifted.provenCount} lifted, ` +
+    `${lifted.unresolvedCount} unresolved` +
+    (lifted.unreachableInstructionCount > 0
+      ? `, ${lifted.unreachableInstructionCount} unreachable and omitted`
+      : "") +
     (prototype.captures.length > 0
       ? `, ${prototype.captures.length} captured upvalue(s)`
       : "");
@@ -252,6 +257,7 @@ export function devirtualizeSection(
   let protocolInstructions = 0;
   let unresolvedInstructions = 0;
   let unstructuredRegions = 0;
+  const resolvedGlobals = new Set<string>();
   const bodies: string[] = [];
 
   for (const index of emissionOrder(section, lifted)) {
@@ -265,15 +271,22 @@ export function devirtualizeSection(
     protocolInstructions += entry.protocolCount;
     unresolvedInstructions += entry.unresolvedCount;
     unstructuredRegions += entry.unstructuredRegions;
+    for (const global of entry.resolvedGlobals) resolvedGlobals.add(global);
     bodies.push(functionText(entry, prototype));
   }
 
-  const provenRatio =
-    instructionRecords === 0 ? 0 : provenInstructions / instructionRecords;
+  /*
+   * Ratios are measured against what is emitted, not against the whole stream.
+   * Unreachable decoy code is omitted, so counting it in the denominator would
+   * understate how much of the emitted program is actually explained.
+   */
+  const denominator =
+    reachableInstructions === 0 ? instructionRecords : reachableInstructions;
+  const provenRatio = denominator === 0 ? 0 : provenInstructions / denominator;
   const explainedRatio =
-    instructionRecords === 0
+    denominator === 0
       ? 0
-      : (provenInstructions + protocolInstructions) / instructionRecords;
+      : (provenInstructions + protocolInstructions) / denominator;
 
   const header = [
     "-- Recovered by 3ziz Deobfuscator from a Luraph VM record stream.",
@@ -285,7 +298,7 @@ export function devirtualizeSection(
     "--",
     `-- source: ${options.sourceLabel ?? `section ${section.index} (${section.kind})`}`,
     `-- prototypes: ${lifted.size} emitted, ${skipped} skipped`,
-    `-- instructions: ${provenInstructions} of ${instructionRecords} lifted to source ` +
+    `-- instructions: ${provenInstructions} of ${reachableInstructions} reachable lifted to source ` +
       `(${(provenRatio * 100).toFixed(2)}%), plus ${protocolInstructions} VM decoder-protocol ` +
       `records, for ${(explainedRatio * 100).toFixed(2)}% explained`,
     `-- unresolved VM ops are kept inline as "[3ziz] unresolved VM op" comments`,
@@ -326,7 +339,7 @@ export function devirtualizeSection(
       provenRatio,
       explainedRatio,
       unstructuredRegions,
-      resolvedGlobalNames: collectGlobalNames(bodies),
+      resolvedGlobalNames: [...resolvedGlobals].sort(),
     },
     reparses,
     ...(reparseError === undefined ? {} : { reparseError }),
