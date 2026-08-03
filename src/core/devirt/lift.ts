@@ -63,6 +63,8 @@ export interface LiftedPrototype {
   readonly childPrototypes: readonly number[];
   /** Globals this function resolves by name, as readability evidence. */
   readonly resolvedGlobals: readonly string[];
+  /** Readable string literals it references, for the navigation index. */
+  readonly stringLiterals: readonly string[];
   readonly usesVararg: boolean;
   readonly unstructuredRegions: number;
 }
@@ -129,6 +131,7 @@ class Lifter {
   private readonly childPrototypes = new Set<number>();
   /** Global names resolved through an environment lookup with a constant key. */
   private readonly resolvedGlobals = new Set<string>();
+  private readonly stringLiterals = new Set<string>();
   private readonly labelTargets = new Set<number>();
   private provenCount = 0;
   private protocolCount = 0;
@@ -228,6 +231,7 @@ class Lifter {
       registers: [...this.usedRegisters].sort((left, right) => left - right),
       childPrototypes: [...this.childPrototypes],
       resolvedGlobals: [...this.resolvedGlobals].sort(),
+      stringLiterals: [...this.stringLiterals],
       usesVararg: this.usesVararg,
       unstructuredRegions: this.unstructuredRegions,
     };
@@ -565,6 +569,20 @@ class Lifter {
         return name(prototypeFunctionName(source.index));
       case "constant": {
         const constant = this.section.constants[source.index - 1];
+        /*
+         * Readable text is what makes a function findable in the index, but
+         * this VM stores its `string.pack` formats as constants too - `<i8`,
+         * `=<>>i< >Jj` - and those are structure, not names.  Requiring a
+         * three-letter word keeps API names and drops format strings.
+         */
+        if (
+          constant?.kind === "string" &&
+          constant.utf8Text !== null &&
+          /[A-Za-z]{3,}/.test(constant.utf8Text) &&
+          /^[\x20-\x7e]{2,}$/.test(constant.utf8Text)
+        ) {
+          this.stringLiterals.add(constant.utf8Text);
+        }
         const rendered = constantExpression(constant);
         if (rendered !== null) return rendered;
         // An unrenderable constant is named, never guessed at.

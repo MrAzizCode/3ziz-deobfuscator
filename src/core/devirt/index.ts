@@ -117,17 +117,39 @@ function functionText(lifted: LiftedPrototype, prototype: JnkieDecodedPrototype)
     (prototype.captures.length > 0
       ? `, ${prototype.captures.length} captured upvalue(s)`
       : "");
+  /*
+   * A 20,000-line file needs a way in.  Naming what a function touches turns
+   * scanning into searching: look for HttpService or GetService and the
+   * function that uses it is findable without reading everything before it.
+   */
+  const touches = summarizeTouches(lifted);
   const body = renderStatements(
     [...declarationStatements(lifted), ...lifted.statements],
     1,
   );
   return [
     header,
+    ...(touches === null ? [] : [touches]),
     `local function ${prototypeFunctionName(prototype.index)}(...)`,
     body,
     "end",
     "",
   ].join("\n");
+}
+
+/** One line naming the globals and strings a function references. */
+function summarizeTouches(lifted: LiftedPrototype): string | null {
+  const parts: string[] = [];
+  if (lifted.resolvedGlobals.length > 0) {
+    parts.push(`globals: ${lifted.resolvedGlobals.slice(0, 12).join(", ")}`);
+  }
+  if (lifted.stringLiterals.length > 0) {
+    const shown = lifted.stringLiterals
+      .slice(0, 8)
+      .map((text) => (text.length > 24 ? `${text.slice(0, 24)}...` : text));
+    parts.push(`strings: ${shown.join(", ")}`);
+  }
+  return parts.length === 0 ? null : `-- ${parts.join("  |  ")}`;
 }
 
 /**
@@ -308,7 +330,46 @@ export function devirtualizeSection(
     "",
   ].join("\n");
 
-  const lua = `${header}${bodies.join("\n")}\nreturn ${prototypeFunctionName(section.rootPrototypeIndex)}\n`;
+  /*
+   * An index of every function that touches something nameable.  Without it a
+   * reader has no entry point into a file this size; with it, finding the code
+   * behind an API name is a search rather than a scan.
+   */
+  const indexLines: string[] = [];
+  for (const index of emissionOrder(section, lifted)) {
+    const entry = lifted.get(index);
+    if (entry === undefined) continue;
+    const facts: string[] = [];
+    if (entry.resolvedGlobals.length > 0) {
+      facts.push(entry.resolvedGlobals.slice(0, 8).join(" "));
+    }
+    if (entry.stringLiterals.length > 0) {
+      facts.push(
+        entry.stringLiterals
+          .slice(0, 5)
+          .map((text) => (text.length > 18 ? `${text.slice(0, 18)}...` : text))
+          .join(" "),
+      );
+    }
+    if (facts.length === 0) continue;
+    indexLines.push(
+      `--   ${prototypeFunctionName(index).padEnd(8)} ${facts.join("  |  ")}`,
+    );
+  }
+  const indexBlock =
+    indexLines.length === 0
+      ? ""
+      : [
+          "-- FUNCTION INDEX - what each recovered function references",
+          `-- ${indexLines.length} of ${lifted.size} functions reference a nameable global or string.`,
+          ...indexLines.slice(0, 400),
+          ...(indexLines.length > 400
+            ? [`--   ... ${indexLines.length - 400} more omitted from this index`]
+            : []),
+          "",
+        ].join("\n");
+
+  const lua = `${header}${indexBlock}${bodies.join("\n")}\nreturn ${prototypeFunctionName(section.rootPrototypeIndex)}\n`;
 
   let reparses = false;
   let reparseError: string | undefined;
