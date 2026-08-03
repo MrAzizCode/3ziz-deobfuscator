@@ -164,8 +164,20 @@ class Lifter {
         const effect = effects[pc - 1] ?? null;
         if (effect === null) {
           const opcode = instructionAt(this.prototype.instructions, pc).rawOpcode;
-          if (PROTOCOL_OPCODES.has(opcode)) this.protocolCount += 1;
-          else this.unresolvedCount += 1;
+          if (PROTOCOL_OPCODES.has(opcode)) {
+            /*
+             * Decoder-protocol handlers move the interpreter's own state and
+             * have no guest-level effect, so omitting them cannot make the
+             * surrounding statements misleading.  They were a quarter of the
+             * output.  The count is reported in the function header and every
+             * record remains in the exported record artifacts.
+             */
+            this.protocolCount += 1;
+            continue;
+          }
+          // An opcode this dispatcher never proved might do anything, so its
+          // marker stays exactly where it sits.
+          this.unresolvedCount += 1;
           statements.push({ kind: "comment", text: this.rawRecordComment(pc) });
           continue;
         }
@@ -673,15 +685,24 @@ class Lifter {
         }
         return;
       }
-      case "clear-range":
+      case "clear-range": {
+        /*
+         * The VM clears a whole register window at once.  Emitting one line
+         * per register made this a third of the entire output; a single
+         * multiple assignment says exactly the same thing.
+         */
+        const targets: LuaExpression[] = [];
         for (let index = effect.first; index <= effect.last; index += 1) {
-          statements.push({
-            kind: "assign",
-            targets: [this.target(index)],
-            values: [literal("nil")],
-          });
+          targets.push(this.target(index));
         }
+        if (targets.length === 0) return;
+        statements.push({
+          kind: "assign",
+          targets,
+          values: targets.map(() => literal("nil")),
+        });
         return;
+      }
       default:
         return;
     }
@@ -862,6 +883,67 @@ export function wrapNonTerminalReturns(
 }
 
 /**
+ * Collapse consecutive VM-internal comments into one line.
+ *
+ * Decoder-protocol and unproven records carry no source-level effect, so a run
+ * of them is noise proportional to how much bookkeeping the VM does between
+ * two real statements.  One summary line keeps the fact and the byte span
+ * while giving the run back to the reader.  Individual records remain in the
+ * exported record artifacts.
+ */
+export function collapseRecordComments(
+  statements: readonly LuaStatement[],
+): readonly LuaStatement[] {
+  const result: LuaStatement[] = [];
+  let run: string[] = [];
+
+  const flush = (): void => {
+    if (run.length === 0) return;
+    if (run.length === 1) {
+      result.push({ kind: "comment", text: run[0]! });
+    } else {
+      const first = firstByteOf(run[0]!);
+      const last = lastByteOf(run[run.length - 1]!);
+      const protocol = run.filter((text) => text.includes("protocol op")).length;
+      const unresolved = run.length - protocol;
+      const parts: string[] = [];
+      if (protocol > 0) parts.push(`${protocol} VM decoder protocol`);
+      if (unresolved > 0) parts.push(`${unresolved} unresolved`);
+      result.push({
+        kind: "comment",
+        text:
+          `[3ziz] ${parts.join(" and ")} record(s)` +
+          (first !== null && last !== null ? ` @bytes[${first},${last})` : "") +
+          "; operands are retained in the exported record artifacts",
+      });
+    }
+    run = [];
+  };
+
+  for (const statement of statements) {
+    if (statement.kind === "comment" && statement.text.startsWith("[3ziz] ") &&
+      (statement.text.includes("protocol op") || statement.text.includes("unresolved VM op"))) {
+      run.push(statement.text);
+      continue;
+    }
+    flush();
+    result.push(statement);
+  }
+  flush();
+  return result;
+}
+
+function firstByteOf(text: string): number | null {
+  const match = /@bytes\[(\d+),/.exec(text);
+  return match === null ? null : Number(match[1]);
+}
+
+function lastByteOf(text: string): number | null {
+  const match = /@bytes\[\d+,(\d+)\)/.exec(text);
+  return match === null ? null : Number(match[1]);
+}
+
+/**
  * Recover `obj:method(...)` from the three-statement shape the VM emits.
  *
  * `SELF_LOOKUP` copies the receiver into the next register and fetches the
@@ -976,7 +1058,31 @@ export function inlineSingleUseTemporaries(
     // A call has effects and a timing; never move one across a statement.
     if (containsCall(definition.values[0]!)) continue;
 
-    const consumer = result[index + 1]!;
+    /*
+     * Find the consumer.  It need not be the very next statement: skipping
+     * plain assignments that touch neither this temporary nor anything its
+     * value reads is safe, because registers are locals and no call or
+     * metamethod between them can change one.  Anything else - a label, a
+     * branch, a call, or an unresolved record - ends the search, since control
+     * could arrive from elsewhere or the effect is unknown.
+     */
+    const value = definition.values[0]!;
+    const valueReads = namesRead(value);
+    let consumerIndex = index + 1;
+    for (; consumerIndex < result.length; consumerIndex += 1) {
+      const candidate = result[consumerIndex]!;
+      if (candidate.kind !== "assign") break;
+      if (countNameUses(candidate, target.name).total > 0) break;
+      if (candidate.values.some(containsCall)) break;
+      const writes = statementWrites(candidate);
+      if (writes.has(target.name)) break;
+      let conflicts = false;
+      for (const read of valueReads) if (writes.has(read)) conflicts = true;
+      if (conflicts) break;
+    }
+    if (consumerIndex >= result.length) continue;
+
+    const consumer = result[consumerIndex]!;
     if (
       consumer.kind !== "assign" &&
       consumer.kind !== "return" &&
@@ -998,8 +1104,10 @@ export function inlineSingleUseTemporaries(
       continue;
     }
 
-    const replaced = substituteName(consumer, target.name, definition.values[0]!);
-    result.splice(index, 2, replaced);
+    // Rewrite the consumer in place and drop the definition; the statements
+    // skipped between them keep their order and their effects.
+    result[consumerIndex] = substituteName(consumer, target.name, value);
+    result.splice(index, 1);
     // Re-examine this position: the fold may enable another one.
     index = Math.max(-1, index - 2);
   }
@@ -1028,6 +1136,56 @@ function assignsToName(statement: LuaStatement, target: string): boolean {
   return statement.targets.some(
     (candidate) => candidate.kind === "name" && candidate.name === target,
   );
+}
+
+/** Every bare name an expression reads. */
+function namesRead(expression: LuaExpression): ReadonlySet<string> {
+  const names = new Set<string>();
+  const visit = (node: LuaExpression): void => {
+    switch (node.kind) {
+      case "name":
+        names.add(node.name);
+        return;
+      case "index":
+        visit(node.object);
+        visit(node.key);
+        return;
+      case "call":
+        visit(node.callee);
+        node.args.forEach(visit);
+        return;
+      case "binary":
+        visit(node.left);
+        visit(node.right);
+        return;
+      case "unary":
+        visit(node.operand);
+        return;
+      case "table":
+        node.fields.forEach(visit);
+        return;
+      default:
+        return;
+    }
+  };
+  visit(expression);
+  return names;
+}
+
+/**
+ * Registers a statement assigns to.  A `t[k] = v` target writes through a
+ * table rather than to a register, so it is not counted.
+ */
+function statementWrites(statement: LuaStatement): ReadonlySet<string> {
+  const names = new Set<string>();
+  if (statement.kind === "assign") {
+    for (const target of statement.targets) {
+      if (target.kind === "name") names.add(target.name);
+    }
+  } else if (statement.kind === "local") {
+    for (const declared of statement.names) names.add(declared);
+  }
+  return names;
 }
 
 /** Expressions Lua accepts before `[`, `.`, `:`, or a call's arguments. */

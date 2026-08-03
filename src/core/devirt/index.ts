@@ -301,7 +301,9 @@ export function devirtualizeSection(
     `-- instructions: ${provenInstructions} of ${reachableInstructions} reachable lifted to source ` +
       `(${(provenRatio * 100).toFixed(2)}%), plus ${protocolInstructions} VM decoder-protocol ` +
       `records, for ${(explainedRatio * 100).toFixed(2)}% explained`,
-    `-- unresolved VM ops are kept inline as "[3ziz] unresolved VM op" comments`,
+    `-- unresolved VM ops stay inline; VM decoder-protocol records have no`,
+    `-- guest-level effect and are counted per function, not printed`,
+    `-- every record is retained in the exported record artifacts`,
     "-- submitted code was never executed",
     "",
   ].join("\n");
