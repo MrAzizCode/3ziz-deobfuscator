@@ -31,9 +31,11 @@ import {
 import {
   blockLabel,
   buildControlFlowGraph,
+  findNaturalLoops,
   orderBlocks,
   type BasicBlock,
   type ControlFlowGraph,
+  type NaturalLoop,
 } from "./cfg";
 import {
   formatLuaNumber,
@@ -143,6 +145,11 @@ class Lifter {
     const effects = this.decodeEffects();
     const cfg = buildControlFlowGraph(effects);
     const order = orderBlocks(cfg);
+    // Innermost loops sort first, so the first entry for a header wins.
+    const loopAt = new Map<number, NaturalLoop>();
+    for (const loop of findNaturalLoops(cfg)) {
+      if (!loopAt.has(loop.header)) loopAt.set(loop.header, loop);
+    }
 
     /*
      * Emit reachable blocks only.  Once branch operands are resolved through
@@ -194,7 +201,15 @@ class Lifter {
      * second emits with exactly those labels.  Structuring decisions do not
      * depend on the label set, so the second pass produces the same shape.
      */
-    const context = { cfg, order, positionOf, bodies, gotoTargets };
+    const context: RegionContext = {
+      cfg,
+      order,
+      positionOf,
+      bodies,
+      gotoTargets,
+      loopAt,
+      openLoops: new Set<number>(),
+    };
     this.emitRegion(0, order.length, context);
     const body = this.emitRegion(0, order.length, context);
     this.unstructuredRegions = gotoTargets.size;
@@ -242,14 +257,29 @@ class Lifter {
       const block = cfg.blocks[blockId]!;
 
       /*
-       * Loop recovery is deliberately not attempted here.  A back edge alone
-       * does not make a natural loop - the head must dominate its source - and
-       * this obfuscator's dispatch is flattened enough that wrapping back
-       * edges in `while true do` produced loops whose first statement was a
-       * jump out of them: correct, but less readable than the goto it
-       * replaced.  Recovering real loops needs the dispatcher's state
-       * variable solved, which is a separate analysis.
+       * A natural loop - a back edge whose target dominates its source - is
+       * emitted as `while true do ... end`, which turns the back edge into
+       * ordinary repetition.  Dominance is what makes this safe: a plain
+       * backwards jump in scrambled layout is not a loop, and wrapping one
+       * produces a loop whose first statement jumps out of it.
        */
+      const loop = context.loopAt.get(blockId);
+      if (loop !== undefined && !context.openLoops.has(blockId)) {
+        const span = loopSpan(loop, context);
+        if (span !== null) {
+          const follow = order[span + 1];
+          const inner = this.emitRegion(position, span + 1, {
+            ...context,
+            openLoops: new Set([...context.openLoops, blockId]),
+            loopHeader: blockId,
+            ...(follow === undefined ? {} : { loopFollow: follow }),
+          });
+          out.push({ kind: "while", condition: literal("true"), body: inner });
+          position = span + 1;
+          continue;
+        }
+      }
+
       if (gotoTargets.has(blockId)) {
         out.push({ kind: "label", name: blockLabel(block) });
       }
@@ -266,6 +296,12 @@ class Lifter {
 
       if (terminator.kind === "jump") {
         const targetId = cfg.blockAt.get(terminator.target);
+        const edge = this.loopEdge(targetId, nextId, nextPosition, to, context);
+        if (edge !== null) {
+          if (edge.kind !== "fallthrough") out.push(edge.statement!);
+          position = nextPosition;
+          continue;
+        }
         if (targetId !== undefined && targetId !== nextId) {
           gotoTargets.add(targetId);
           out.push({ kind: "goto", label: blockLabel(cfg.blocks[targetId]!) });
@@ -278,6 +314,25 @@ class Lifter {
       const fallthroughId = cfg.blockAt.get(terminator.fallthrough);
       const targetPosition =
         targetId === undefined ? undefined : positionOf.get(targetId);
+
+      /*
+       * A conditional back edge at the end of a loop body is the loop's own
+       * test.  Emitting `if not <condition> then break end` says that
+       * directly; leaving it as a label and a goto would keep the loop
+       * looking like the spaghetti it replaced.
+       */
+      if (
+        context.loopHeader !== undefined &&
+        targetId === context.loopHeader &&
+        nextPosition >= to
+      ) {
+        const exitWhen = this.branchCondition(terminator.effect, true);
+        if (exitWhen !== null) {
+          out.push({ kind: "if", condition: exitWhen, then: [{ kind: "break" }] });
+          position = nextPosition;
+          continue;
+        }
+      }
 
       if (
         fallthroughId === nextId &&
@@ -314,6 +369,36 @@ class Lifter {
       position = nextPosition;
     }
     return out;
+  }
+
+  /**
+   * Classify an edge against the innermost open loop.
+   *
+   * A jump back to the loop header at the end of the body is the loop
+   * repeating and needs no statement; a jump to the block after the loop is a
+   * `break`.  Returns null when the edge has nothing to do with the loop.
+   */
+  private loopEdge(
+    targetId: number | undefined,
+    nextId: number | undefined,
+    nextPosition: number,
+    to: number,
+    context: RegionContext,
+  ): { kind: "fallthrough" | "break"; statement?: LuaStatement } | null {
+    if (targetId === undefined) return null;
+    if (context.loopHeader !== undefined && targetId === context.loopHeader) {
+      // Falling off the end of the body re-enters the loop on its own.
+      if (nextPosition >= to) return { kind: "fallthrough" };
+      return null;
+    }
+    if (
+      context.loopFollow !== undefined &&
+      targetId === context.loopFollow &&
+      targetId !== nextId
+    ) {
+      return { kind: "break", statement: { kind: "break" } };
+    }
+    return null;
   }
 
   /**
@@ -782,6 +867,37 @@ interface RegionContext {
   readonly positionOf: ReadonlyMap<number, number>;
   readonly bodies: ReadonlyMap<number, LuaStatement[]>;
   readonly gotoTargets: Set<number>;
+  /** Natural loop headed by each block, when one exists. */
+  readonly loopAt: ReadonlyMap<number, NaturalLoop>;
+  /** Loop headers already open in an enclosing region. */
+  readonly openLoops: ReadonlySet<number>;
+  /** Header of the innermost open loop, for back-edge suppression. */
+  readonly loopHeader?: number;
+  /** Block emitted immediately after the innermost loop, for `break`. */
+  readonly loopFollow?: number;
+}
+
+/**
+ * The last emission position belonging to a loop, or null when the loop is
+ * not contiguous in emission order.
+ *
+ * A `while` can only wrap a contiguous run of blocks; if the body is scattered
+ * the loop is left as `goto`, which is correct rather than pretty.
+ */
+function loopSpan(loop: NaturalLoop, context: RegionContext): number | null {
+  const positions: number[] = [];
+  for (const id of loop.body) {
+    const position = context.positionOf.get(id);
+    if (position === undefined) return null;
+    positions.push(position);
+  }
+  if (positions.length === 0) return null;
+  const first = Math.min(...positions);
+  const last = Math.max(...positions);
+  if (last - first + 1 !== positions.length) return null;
+  // The header must be the first block, or control would enter mid-loop.
+  if (context.order[first] !== loop.header) return null;
+  return last;
 }
 
 

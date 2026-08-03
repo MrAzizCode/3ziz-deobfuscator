@@ -50,6 +50,16 @@ export function blockLabel(block: BasicBlock): string {
   return `L${block.start}`;
 }
 
+export interface NaturalLoop {
+  /** Block every path into the loop must pass through. */
+  readonly header: number;
+  /** Block whose back edge closes the loop. */
+  readonly latch: number;
+  readonly body: ReadonlySet<number>;
+  /** Blocks outside the loop that the body branches to. */
+  readonly exits: ReadonlySet<number>;
+}
+
 export interface ControlFlowGraph {
   readonly blocks: readonly BasicBlock[];
   /** Block id containing pc 1, or -1 when the prototype is empty. */
@@ -292,4 +302,142 @@ export function orderBlocks(cfg: ControlFlowGraph): readonly number[] {
     }
   }
   return order;
+}
+
+/**
+ * Immediate dominators, by the iterative dataflow algorithm.
+ *
+ * A block dominates another when every path from the entry to it passes
+ * through the first.  That relation is what separates a genuine loop from a
+ * backwards jump: without it, wrapping any back edge in `while true do`
+ * produces loops whose first statement is a jump out of them.
+ *
+ * Returns a map from block id to its immediate dominator; the entry maps to
+ * itself, and unreachable blocks are absent.
+ */
+export function computeDominators(
+  cfg: ControlFlowGraph,
+): ReadonlyMap<number, number> {
+  const immediate = new Map<number, number>();
+  if (cfg.entry < 0) return immediate;
+
+  // Reverse post-order gives the iteration a head start.
+  const order: number[] = [];
+  const seen = new Set<number>([cfg.entry]);
+  const stack: number[] = [cfg.entry];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    order.push(id);
+    for (const successor of cfg.blocks[id]?.successors ?? []) {
+      if (!seen.has(successor)) {
+        seen.add(successor);
+        stack.push(successor);
+      }
+    }
+  }
+  const position = new Map<number, number>();
+  order.forEach((id, index) => position.set(id, index));
+
+  immediate.set(cfg.entry, cfg.entry);
+  const intersect = (left: number, right: number): number => {
+    let a = left;
+    let b = right;
+    while (a !== b) {
+      // Walk the deeper one up until both meet.
+      while ((position.get(a) ?? 0) > (position.get(b) ?? 0)) {
+        const next = immediate.get(a);
+        if (next === undefined || next === a) return b;
+        a = next;
+      }
+      while ((position.get(b) ?? 0) > (position.get(a) ?? 0)) {
+        const next = immediate.get(b);
+        if (next === undefined || next === b) return a;
+        b = next;
+      }
+    }
+    return a;
+  };
+
+  let changed = true;
+  let guard = 0;
+  while (changed && guard < 1_000) {
+    changed = false;
+    guard += 1;
+    for (const id of order) {
+      if (id === cfg.entry) continue;
+      let candidate: number | null = null;
+      for (const predecessor of cfg.blocks[id]?.predecessors ?? []) {
+        if (!immediate.has(predecessor)) continue;
+        candidate = candidate === null ? predecessor : intersect(candidate, predecessor);
+      }
+      if (candidate !== null && immediate.get(id) !== candidate) {
+        immediate.set(id, candidate);
+        changed = true;
+      }
+    }
+  }
+  return immediate;
+}
+
+/** True when `candidate` dominates `block`. */
+function dominates(
+  candidate: number,
+  block: number,
+  immediate: ReadonlyMap<number, number>,
+): boolean {
+  let current = block;
+  for (let guard = 0; guard < 10_000; guard += 1) {
+    if (current === candidate) return true;
+    const next = immediate.get(current);
+    if (next === undefined || next === current) return false;
+    current = next;
+  }
+  return false;
+}
+
+/**
+ * Natural loops: a back edge whose target dominates its source, plus every
+ * block that reaches the source without leaving through the header.
+ *
+ * A backwards jump that is not dominated is not a loop - it is the scrambled
+ * layout this obfuscator produces - and is deliberately left alone.
+ */
+export function findNaturalLoops(
+  cfg: ControlFlowGraph,
+  immediate: ReadonlyMap<number, number> = computeDominators(cfg),
+): readonly NaturalLoop[] {
+  const loops: NaturalLoop[] = [];
+  for (const block of cfg.blocks) {
+    if (!cfg.reachable.has(block.id)) continue;
+    for (const successor of block.successors) {
+      if (!dominates(successor, block.id, immediate)) continue;
+
+      // Collect the body by walking predecessors back from the latch.
+      const body = new Set<number>([successor]);
+      const stack: number[] = [];
+      if (block.id !== successor) {
+        body.add(block.id);
+        stack.push(block.id);
+      }
+      while (stack.length > 0) {
+        const id = stack.pop()!;
+        for (const predecessor of cfg.blocks[id]?.predecessors ?? []) {
+          if (!body.has(predecessor)) {
+            body.add(predecessor);
+            stack.push(predecessor);
+          }
+        }
+      }
+
+      const exits = new Set<number>();
+      for (const id of body) {
+        for (const next of cfg.blocks[id]?.successors ?? []) {
+          if (!body.has(next)) exits.add(next);
+        }
+      }
+      loops.push({ header: successor, latch: block.id, body, exits });
+    }
+  }
+  // Innermost first, so nesting is emitted correctly.
+  return loops.sort((left, right) => left.body.size - right.body.size);
 }
