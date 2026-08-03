@@ -579,7 +579,9 @@ class Lifter {
           constant?.kind === "string" &&
           constant.utf8Text !== null &&
           /[A-Za-z]{3,}/.test(constant.utf8Text) &&
-          /^[\x20-\x7e]{2,}$/.test(constant.utf8Text)
+          // Control bytes mean packed binary rather than text; non-ASCII
+          // letters are fine and were previously discarded.
+          !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(constant.utf8Text)
         ) {
           this.stringLiterals.add(constant.utf8Text);
         }

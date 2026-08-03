@@ -28,16 +28,33 @@ Recovered names include `game`, `Instance`, `Enum`, `CFrame`, `Vector3`,
 
 ## What blocks full recovery
 
-**String constants are encrypted.** 4,445 of them in the VM section, and the
-strings that say what the script *does* are among them. They are assembled at
-runtime through helper calls, so the output shows structure without meaning:
+**The target script's strings are not encrypted.** An earlier version of this
+document said they were; that was wrong, and the correction matters because it
+changes what is worth attacking.
 
-```lua
-v14 = VM_RUNTIME[7]
-v15 = "\134"
-v15 = v15(v16)
-v14 = v14 + v15
-```
+Measured separately per section:
+
+| | Target script (outer) | Luraph VM (nested) |
+|---|---|---|
+| String constants | 497 | 4,445 |
+| Real words | **168 (33.8%)** | 4 (0.1%) |
+| `string.pack` formats | 103 (20.7%) | 1 |
+| Non-printable | 208 (41.9%) | 4,415 (99.3%) |
+
+The 99.3%-encrypted population is the obfuscator's own interpreter, not the
+protected program. And the target script's 208 "non-printable" constants are
+overwhelmingly *not* ciphertext: 99 are exactly eight bytes holding
+little-endian integers (`fa01000000000000` is 506, `2300000000000000` is 35),
+and most of the rest are one to five byte binary values. A handful are valid
+UTF-8 that happens to fall outside ASCII.
+
+So the protected script's text is already recovered. What remains unreadable
+about it is control flow, synthesized local names, and the 6.7% of instructions
+whose opcodes were never proven - not decryption.
+
+The VM section's ciphertext still blocks understanding *the interpreter*, which
+is what a full opcode derivation would need. That is a different goal from
+reading the protected script.
 
 **The VM's helper table is opaque.** `VM_RUNTIME[n]` indexes a table of 122
 functions whose keys are mangled to one and two character names (`xm`, `KA`,
@@ -65,11 +82,11 @@ or two states then stops: state bodies contain nested dispatchers that exhaust
 the step budget, and calls invalidate the store. Edge recovery 0-2 of ~100
 states.
 
-**Cryptanalysis of the encrypted constants.** Tested identity, XOR by a
+**Cryptanalysis of the VM section's constants.** Tested identity, XOR by a
 constant, by position, by length, by constant index, by index plus position,
-addition and subtraction of position and index, byte reversal, and all 256
-single-byte XOR keys, scoring by printable share against a crib from a related
-sample's plaintext VM vocabulary.
+addition and subtraction of position and index, byte reversal, XOR with the
+preceding byte, and all 256 single-byte XOR keys, scoring by printable share
+against a crib from a related sample's plaintext VM vocabulary.
 
 | Family | All-printable share |
 |---|---|
@@ -78,6 +95,10 @@ sample's plaintext VM vocabulary.
 
 Raw constants are high entropy (`0b2f06a9bed2`, `b4a3f7142c457f`). The scheme
 is per-constant keyed or a stream cipher; it cannot be recovered by inspection.
+
+Worth noting what this does *not* block: these are the interpreter's own
+constants. The protected script's strings are in the other section and are
+already readable.
 
 **Extracting the opcode table from the loader's dispatch structure.** The
 loader holds one 159-field table with 122 function values and eight
