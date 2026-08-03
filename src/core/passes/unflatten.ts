@@ -24,8 +24,10 @@
 import {
   asStateNumber,
   evaluateConstantExpression,
+  integer,
   type LuaValue,
 } from "./const-eval";
+import { executeStatements, ValueStore } from "./abstract-interpreter";
 import type { LuauNode } from "../source/luau-parser";
 
 export interface DispatcherState {
@@ -61,6 +63,64 @@ export interface UnflattenOptions {
 }
 
 const DEFAULT_MAX_STATES = 4_096;
+
+/**
+ * Bind a wrapper's parameters to the arguments it is immediately called with.
+ *
+ * These files are one expression: a function literal applied straight away to
+ * a fixed argument list that carries the dispatcher's seed table and its memo
+ * table.  Without those bindings every next-state expression reads an unknown
+ * name and nothing resolves, so this is what makes the dispatcher analysable
+ * at all.
+ *
+ *     return (function(w, N, ..., b, v) ... end)(type, '#', ..., {}, {24046, ...})
+ *
+ * Arguments that are library values rather than constants simply stay unknown.
+ */
+export function bindImmediateCallArguments(
+  chunk: LuauNode,
+): ReadonlyMap<string, LuaValue> {
+  const bindings = new Map<string, LuaValue>();
+
+  const unwrap = (node: LuauNode | undefined): LuauNode | undefined => {
+    let current = node;
+    while (current?.type === "ParenthesisExpression") {
+      current = current.expression as LuauNode | undefined;
+    }
+    return current;
+  };
+
+  const walk = (node: unknown): void => {
+    if (node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    const record = node as LuauNode;
+    if (record.type === "CallExpression") {
+      const callee = unwrap(record.base as LuauNode | undefined);
+      if (callee?.type === "FunctionDeclaration") {
+        const parameters = (callee.parameters as LuauNode[] | undefined) ?? [];
+        const args = (record.arguments as LuauNode[] | undefined) ?? [];
+        parameters.forEach((parameter, index) => {
+          if (parameter.type !== "Identifier") return;
+          const argument = args[index];
+          if (argument === undefined) return;
+          const value = evaluateConstantExpression(argument, {
+            variables: bindings,
+          });
+          if (value !== null) bindings.set(String(parameter.name), value);
+        });
+      }
+    }
+    for (const [key, value] of Object.entries(record)) {
+      if (key === "loc" || key === "range") continue;
+      walk(value);
+    }
+  };
+  walk(chunk);
+  return bindings;
+}
 
 function isInfiniteLoop(node: LuauNode): boolean {
   if (node.type === "WhileStatement") {
@@ -204,22 +264,75 @@ function collectStates(
         collectStates(clauseBody, variable, scope, states, limit);
         continue;
       }
-      const successors = stateAssignments(clauseBody, variable)
-        .map((expression) =>
-          asStateNumber(evaluateConstantExpression(expression, { variables: scope })),
-        )
-        .filter((value): value is number => value !== null);
       const exits = containsExit(clauseBody);
       for (const value of matched) {
+        /*
+         * Run the block against a store rather than folding its assignments in
+         * isolation.  These dispatchers memoize the next state, so the value
+         * only exists after a slot has been written and read back, and the
+         * state variable is known on entry: it is the value that selected this
+         * block.
+         */
+        const store = new ValueStore(scope);
+        store.set(variable, integer(BigInt(Math.trunc(value))));
+        const outcome = executeStatements(clauseBody, store);
+        const executed =
+          outcome.kind === "completed" || outcome.kind === "returned" || outcome.kind === "broke"
+            ? asStateNumber(store.get(variable))
+            : null;
+
+        const successors =
+          executed !== null && executed !== value
+            ? [executed]
+            : stateAssignments(clauseBody, variable)
+                .map((expression) =>
+                  asStateNumber(
+                    evaluateConstantExpression(expression, { variables: scope }),
+                  ),
+                )
+                .filter((candidate): candidate is number => candidate !== null);
+
         states.push({ value, body: clauseBody, successors, exits });
       }
     }
   }
 }
 
+/** Names assigned anywhere inside a block. */
+function assignedNames(body: readonly LuauNode[]): ReadonlySet<string> {
+  const names = new Set<string>();
+  const walk = (node: unknown): void => {
+    if (node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    const record = node as LuauNode;
+    if (record.type === "AssignmentStatement") {
+      for (const target of (record.variables as LuauNode[] | undefined) ?? []) {
+        if (target.type === "Identifier") names.add(String(target.name));
+      }
+    }
+    if (record.type === "CompoundAssignmentStatement") {
+      const target = record.variable as LuauNode | undefined;
+      if (target?.type === "Identifier") names.add(String(target.name));
+    }
+    for (const [key, value] of Object.entries(record)) {
+      if (key === "loc" || key === "range") continue;
+      walk(value);
+    }
+  };
+  walk(body);
+  return names;
+}
+
 /**
- * Identify the variable a `while true` loop switches on: the one compared for
- * equality most often in its top-level if-chain.
+ * Identify the variable a `while true` loop switches on.
+ *
+ * Being compared often is not enough: these wrappers alias constants to
+ * parameters, so a name like `x` bound to 1 at the call site appears in more
+ * comparisons than the real state variable does.  A state variable is one the
+ * loop both compares *and* assigns - that is what makes it a state.
  */
 function inferStateVariable(body: readonly LuauNode[]): string | null {
   const counts = new Map<string, number>();
@@ -244,9 +357,11 @@ function inferStateVariable(body: readonly LuauNode[]): string | null {
     }
   };
   walk(body, 0);
+  const assigned = assignedNames(body);
   let best: string | null = null;
   let bestCount = 1;
   for (const [name, count] of counts) {
+    if (!assigned.has(name)) continue;
     if (count > bestCount) {
       best = name;
       bestCount = count;
@@ -266,7 +381,9 @@ export function findFlattenedDispatchers(
   chunk: LuauNode,
   options: UnflattenOptions = {},
 ): readonly FlattenedDispatcher[] {
-  const scope = options.scope ?? new Map<string, LuaValue>();
+  // Seed from the wrapper's own call arguments unless the caller supplied a
+  // scope; that is where the seed and memo tables come from.
+  const scope = options.scope ?? bindImmediateCallArguments(chunk);
   const limit = options.maxStates ?? DEFAULT_MAX_STATES;
   const found: FlattenedDispatcher[] = [];
 
@@ -335,4 +452,116 @@ export function summarizeDispatchers(
     unresolvedStates: unresolved,
     resolutionRatio: states === 0 ? 0 : (states - unresolved) / states,
   };
+}
+
+export interface DispatcherWalk {
+  /** States in the order control actually reaches them. */
+  readonly order: readonly number[];
+  /** Why the walk stopped. */
+  readonly stopped: "exit" | "unknown-state" | "missing-state" | "revisit" | "limit";
+  /** Edges proven by walking, as `from -> to`. */
+  readonly edges: readonly (readonly [number, number])[];
+}
+
+/**
+ * Walk a dispatcher from an entry state, carrying one store across every
+ * block.
+ *
+ * Resolving states independently cannot work: the next-state value is memoized
+ * into a table that earlier states populate, so a block read in isolation sees
+ * an empty slot. Threading a single store through the walk reproduces the
+ * order the dispatcher itself would take, which is what turns the state
+ * machine back into a sequence.
+ *
+ * The walk is bounded and stops rather than guessing whenever the next state
+ * cannot be proven.
+ */
+export function walkDispatcher(
+  dispatcher: FlattenedDispatcher,
+  entryState: number,
+  scope: ReadonlyMap<string, LuaValue>,
+  maxSteps = 4_096,
+): DispatcherWalk {
+  const byValue = new Map<number, DispatcherState>();
+  for (const state of dispatcher.states) {
+    if (!byValue.has(state.value)) byValue.set(state.value, state);
+  }
+
+  const store = new ValueStore(scope);
+  const order: number[] = [];
+  const edges: (readonly [number, number])[] = [];
+  const seen = new Set<number>();
+  let current = entryState;
+
+  for (let step = 0; step < maxSteps; step += 1) {
+    const state = byValue.get(current);
+    if (state === undefined) {
+      return { order, stopped: "missing-state", edges };
+    }
+    if (seen.has(current)) {
+      // A revisit means a real loop in the state machine; the sequence up to
+      // here is still proven, so stop rather than unrolling forever.
+      return { order, stopped: "revisit", edges };
+    }
+    seen.add(current);
+    order.push(current);
+
+    store.set(dispatcher.stateVariable, integer(BigInt(Math.trunc(current))));
+    const outcome = executeStatements(state.body, store);
+    if (outcome.kind === "returned" || outcome.kind === "broke" || state.exits) {
+      return { order, stopped: "exit", edges };
+    }
+    if (outcome.kind === "limit" || outcome.kind === "unknown") {
+      return { order, stopped: "limit", edges };
+    }
+    const next = asStateNumber(store.get(dispatcher.stateVariable));
+    if (next === null) return { order, stopped: "unknown-state", edges };
+    edges.push([current, next]);
+    current = next;
+  }
+  return { order, stopped: "limit", edges };
+}
+
+/**
+ * Entry states worth trying: constants the state variable is assigned outside
+ * the dispatcher loop, plus every state, so a walk can still be attempted when
+ * the initial assignment is not a plain constant.
+ */
+export function candidateEntryStates(
+  chunk: LuauNode,
+  dispatcher: FlattenedDispatcher,
+  scope: ReadonlyMap<string, LuaValue>,
+): readonly number[] {
+  const candidates: number[] = [];
+  const walk = (node: unknown): void => {
+    if (node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    const record = node as LuauNode;
+    if (record.type === "LocalStatement" || record.type === "AssignmentStatement") {
+      const targets = (record.variables as LuauNode[] | undefined) ?? [];
+      const values = ((record.init as LuauNode[] | undefined) ?? []);
+      targets.forEach((target, index) => {
+        if (target.type !== "Identifier") return;
+        if (target.name !== dispatcher.stateVariable) return;
+        const value = values[index];
+        if (value === undefined) return;
+        const resolved = asStateNumber(
+          evaluateConstantExpression(value, { variables: scope }),
+        );
+        if (resolved !== null) candidates.push(resolved);
+      });
+    }
+    for (const [key, value] of Object.entries(record)) {
+      if (key === "loc" || key === "range") continue;
+      walk(value);
+    }
+  };
+  walk(chunk);
+  const known = new Set(dispatcher.states.map((state) => state.value));
+  const ordered = candidates.filter((value) => known.has(value));
+  for (const state of dispatcher.states) ordered.push(state.value);
+  return [...new Set(ordered)];
 }
