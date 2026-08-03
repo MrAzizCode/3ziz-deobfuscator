@@ -169,6 +169,135 @@ function register(index: number): JnkieValue {
   return { kind: "register", index };
 }
 
+/**
+ * Mode 7 is the register addressing mode.
+ *
+ * Measured across the authorized sample, 96-98% of mode-7 payloads fall inside
+ * their prototype's declared frame, against 10-15% for mode 2 (a constant
+ * index, payloads up to 2,335) and 32-65% for modes 3 and 6 (relative program
+ * counters).  Reading a payload as a register without checking the mode
+ * invents registers that cannot exist - a frame of 30 slots does not have a
+ * register 2,315.
+ */
+const REGISTER_MODE = 7;
+
+function isRegisterChannel(channel: JnkieInstructionChannel): boolean {
+  return channel.mode === REGISTER_MODE;
+}
+
+/** Every register index an effect names. */
+function registerIndices(effect: JnkieOpEffect): readonly number[] {
+  const out: number[] = [];
+  const take = (value: JnkieValue): void => {
+    if (value.kind === "register") out.push(value.index);
+  };
+  switch (effect.kind) {
+    case "assign": {
+      out.push(effect.target);
+      const expression = effect.expression;
+      if (expression.kind === "value") take(expression.value);
+      else if (expression.kind === "table-get") {
+        take(expression.table);
+        take(expression.key);
+      } else if (expression.kind === "binary") {
+        take(expression.left);
+        take(expression.right);
+      } else if (expression.kind === "length") take(expression.operand);
+      break;
+    }
+    case "table-set":
+      take(effect.table);
+      take(effect.key);
+      take(effect.value);
+      break;
+    case "self":
+      // The receiver copy lands in target + 1.
+      out.push(effect.target, effect.target + 1, effect.object);
+      take(effect.key);
+      break;
+    case "call":
+      out.push(effect.base);
+      // Range ends matter as much as bases: an argument or result count read
+      // from a non-register channel would span thousands of slots.
+      if (effect.arguments.kind === "fixed") {
+        out.push(effect.arguments.first + Math.max(0, effect.arguments.count - 1));
+      } else {
+        out.push(effect.arguments.first);
+      }
+      if (effect.results.kind === "fixed") {
+        out.push(effect.results.first + Math.max(0, effect.results.count - 1));
+      } else if (effect.results.kind === "all") {
+        out.push(effect.results.first);
+      }
+      break;
+    case "tailcall":
+      out.push(effect.base);
+      if (effect.arguments.kind === "fixed") {
+        out.push(effect.arguments.first + Math.max(0, effect.arguments.count - 1));
+      } else {
+        out.push(effect.arguments.first);
+      }
+      break;
+    case "vararg":
+      out.push(effect.first, effect.first + Math.max(0, effect.count - 1));
+      break;
+    case "test":
+      out.push(effect.operand);
+      break;
+    case "compare-jump":
+      take(effect.left);
+      take(effect.right);
+      break;
+    case "clear-range":
+      out.push(effect.first, effect.last);
+      break;
+    case "table-move":
+      out.push(effect.destination, effect.sourceLast);
+      break;
+    case "return":
+      if (effect.values.kind === "fixed") {
+        out.push(
+          effect.values.first,
+          effect.values.first + Math.max(0, effect.values.count - 1),
+        );
+      }
+      break;
+    default:
+      break;
+  }
+  return out;
+}
+
+/**
+ * Reject an effect that names a register no operand could have supplied.
+ *
+ * Handlers read operand payloads positionally, so a channel carrying a
+ * constant index or a relative program counter would otherwise be lifted as a
+ * register.  Every genuine register comes from a mode-7 channel, and handlers
+ * only ever offset one by a small fixed amount (`base + 1`, `q + 3`), so an
+ * index beyond the largest mode-7 payload plus that slack did not come from
+ * this instruction and the effect is not trustworthy.
+ */
+const REGISTER_OFFSET_SLACK = 4;
+
+function effectRegistersArePlausible(
+  effect: JnkieOpEffect,
+  channels: readonly JnkieInstructionChannel[],
+): boolean {
+  let ceiling = -1;
+  for (const channel of channels) {
+    if (isRegisterChannel(channel) && channel.payload > ceiling) {
+      ceiling = channel.payload;
+    }
+  }
+  if (ceiling < 0) return false;
+  const limit = ceiling + REGISTER_OFFSET_SLACK;
+  for (const index of registerIndices(effect)) {
+    if (!Number.isFinite(index) || index < 0 || index > limit) return false;
+  }
+  return true;
+}
+
 function literal(value: number): JnkieValue {
   return { kind: "number", value };
 }
@@ -240,6 +369,19 @@ function genericResults(base: number, encoded: number): JnkieCallResults {
  * and preserve the raw record rather than guessing.
  */
 export function resolveOpEffect(
+  instruction: JnkieDecodedInstruction,
+  selector: number,
+): JnkieResolvedOp | null {
+  const resolved = resolveHandler(instruction, selector);
+  if (resolved === null) return null;
+  // Reject an effect naming a register no operand of this instruction supplied.
+  const { A, N, Q } = instruction.channels;
+  return effectRegistersArePlausible(resolved.effect, [A, N, Q])
+    ? resolved
+    : null;
+}
+
+function resolveHandler(
   instruction: JnkieDecodedInstruction,
   selector: number,
 ): JnkieResolvedOp | null {
