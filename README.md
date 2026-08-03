@@ -126,7 +126,8 @@ Analyze only code you own or are explicitly authorized to inspect.
 ## Documentation
 
 [Architecture](docs/ARCHITECTURE.md) · [Threat model](docs/THREAT_MODEL.md) ·
-[Test plan](docs/TEST_PLAN.md) · [Dependency notes](docs/SECURITY_AUDIT.md)
+[Test plan](docs/TEST_PLAN.md) · [Recovery limits](docs/RECOVERY_LIMITS.md) ·
+[Dependency notes](docs/SECURITY_AUDIT.md)
 
 ## License
 
